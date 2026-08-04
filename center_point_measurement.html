@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0b0d10" />
+<title>同心度チェッカー</title>
+<style>
+  :root{
+    --bg: #0b0d10;
+    --panel: #14171c;
+    --panel-2: #1c2028;
+    --line: #262b33;
+    --text: #e7e9ec;
+    --sub: #8b93a1;
+    --accent: #4aa3ff;
+    --ok-bg: #0d3d1a;
+    --ok-fg: #4ade80;
+    --ng-bg: #4a0d0d;
+    --ng-fg: #f87171;
+    --warn-bg: #5a4a00;
+    --warn-fg: #ffcc66;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
+    overscroll-behavior:none;
+  }
+  #app{
+    display:flex; flex-direction:column;
+    min-height:100vh;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  header{
+    padding:14px 16px 10px;
+    display:flex; align-items:baseline; justify-content:space-between;
+    border-bottom:1px solid var(--line);
+  }
+  header h1{ font-size:16px; margin:0; font-weight:700; letter-spacing:.02em; }
+  header .badge{ font-size:11px; color:var(--sub); }
+
+  .stage{
+    position:relative;
+    width:100%;
+    aspect-ratio: 3 / 4;
+    max-height:62vh;
+    background:#000;
+    overflow:hidden;
+  }
+  .stage canvas{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    object-fit:cover;
+  }
+  #hint{
+    position:absolute; left:0; right:0; top:0;
+    padding:8px 12px;
+    font-size:12px; color:var(--sub);
+    background:linear-gradient(to bottom, rgba(0,0,0,.55), transparent);
+    pointer-events:none;
+  }
+
+  .status-wrap{ padding:14px 16px 4px; }
+  .status-card{
+    border-radius:14px;
+    padding:14px 16px;
+    background:var(--panel-2);
+    text-align:center;
+    font-size:20px;
+    font-weight:800;
+    color:var(--sub);
+    transition:background .15s, color .15s;
+  }
+  .detail{
+    margin-top:8px;
+    font-size:12.5px;
+    color:var(--sub);
+    line-height:1.7;
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:2px 12px;
+    padding:0 4px;
+    min-height:3.4em;
+  }
+  .detail span.k{ color:#6b7280; }
+  .detail span.v{ color:var(--text); font-variant-numeric:tabular-nums; }
+
+  .controls{
+    padding:6px 16px 18px;
+    display:flex; flex-direction:column; gap:14px;
+  }
+  .control-row label{
+    display:flex; justify-content:space-between;
+    font-size:13px; color:var(--sub); margin-bottom:6px;
+  }
+  .control-row label .val{ color:var(--text); font-variant-numeric:tabular-nums; }
+  input[type=range]{
+    -webkit-appearance:none; width:100%; height:36px; background:transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:6px; border-radius:3px; background:var(--line);
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    width:26px; height:26px; margin-top:-10px;
+    border-radius:50%; background:var(--accent);
+    border:3px solid #0b0d10;
+    box-shadow:0 0 0 1px var(--accent);
+  }
+
+  .btn-row{ display:flex; gap:10px; }
+  button{
+    flex:1;
+    -webkit-appearance:none; border:none;
+    border-radius:12px;
+    padding:15px 10px;
+    font-size:14.5px; font-weight:700;
+    color:var(--text);
+    background:var(--panel-2);
+    border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center; gap:6px;
+  }
+  button:active{ background:#232833; }
+  button.primary{ background:var(--accent); color:#04121f; border-color:var(--accent); }
+  button.primary:active{ background:#3a8ee0; }
+  button.danger-ready{ background:#3a1414; border-color:#5a1c1c; color:#ffb4b4; }
+
+  .cam-row{ display:flex; gap:10px; align-items:center; }
+  .cam-row select{
+    flex:1;
+    background:var(--panel-2); color:var(--text);
+    border:1px solid var(--line); border-radius:12px;
+    padding:12px; font-size:13.5px;
+  }
+
+  #snap-toast{
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    background:#0d3d1a; color:#4ade80; padding:10px 18px; border-radius:20px;
+    font-size:13px; font-weight:700; opacity:0; pointer-events:none;
+    transition:opacity .2s;
+    z-index:50;
+  }
+  #snap-toast.show{ opacity:1; }
+
+  #boot{
+    position:fixed; inset:0; background:var(--bg);
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; z-index:100; text-align:center; padding:24px;
+  }
+  #boot .spinner{
+    width:34px; height:34px; border-radius:50%;
+    border:3px solid var(--line); border-top-color:var(--accent);
+    animation:spin 0.9s linear infinite;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  #boot p{ color:var(--sub); font-size:13px; max-width:280px; }
+  #boot.hidden{ display:none; }
+
+  a.link{ color:var(--accent); }
+</style>
+</head>
+<body>
+<div id="boot">
+  <div class="spinner"></div>
+  <p id="boot-msg">OpenCV.js を読み込み中です…<br/>初回は数秒かかることがあります。</p>
+</div>
+
+<div id="app">
+  <header>
+    <h1>同心度チェッカー</h1>
+    <span class="badge">OpenCV.js</span>
+  </header>
+
+  <div class="stage" id="stage">
+    <canvas id="output"></canvas>
+    <div id="hint">パイプ端面をカメラ中央に収めてください</div>
+  </div>
+
+  <div class="status-wrap">
+    <div class="status-card" id="statusCard">カメラ起動中…</div>
+    <div class="detail" id="detail"></div>
+  </div>
+
+  <div class="controls">
+    <div class="control-row">
+      <label>黒円検出しきい値（明るさ）<span class="val" id="threshVal">60</span></label>
+      <input type="range" id="threshSlider" min="10" max="150" value="60" step="1"/>
+    </div>
+    <div class="control-row">
+      <label>OK判定の許容ズレ比率<span class="val" id="ratioVal">5.0 %</span></label>
+      <input type="range" id="ratioSlider" min="1" max="30" value="5" step="0.5"/>
+    </div>
+    <div class="control-row">
+      <label>内側円の最大半径（px・被写体との距離に応じ調整）<span class="val" id="maxRVal">20</span></label>
+      <input type="range" id="maxRSlider" min="10" max="200" value="20" step="1"/>
+    </div>
+
+    <div class="btn-row">
+      <button class="primary" id="snapBtn">📷 スナップショット保存</button>
+      <button id="pauseBtn">⏸ 一時停止</button>
+    </div>
+    <div class="cam-row">
+      <select id="camSelect"></select>
+      <button id="switchBtn" style="flex:0 0 auto; padding:12px 16px;">🔄 切替</button>
+    </div>
+    <p style="font-size:11px;color:var(--sub);line-height:1.6;margin:0;">
+      赤丸＝内側（黒円）／緑丸＝外側（白円）／黄線＝中心のズレ方向<br/>
+      うまく検出できない場合は「黒円検出しきい値」と「内側円の最大半径」を調整してください。
+    </p>
+  </div>
+</div>
+
+<div id="snap-toast">✅ 保存しました</div>
+
+<script src="https://docs.opencv.org/4.9.0/opencv.js" async></script>
+<script>
+"use strict";
+
+/* ============== パラメータ ============== */
+const MIN_INNER_RADIUS = 2;
+const BRIGHT_PEAK_MIN = 180;
+
+let MAX_INNER_RADIUS = 20; // スライダーで可変
+
+/* ============== グローバル状態 ============== */
+let cvReady = false;
+let video, outCanvas, outCtx;
+let workCanvas, workCtx; // 実映像サイズの作業用（非表示）
+let stream = null;
+let currentDeviceId = null;
+let paused = false;
+let running = false;
+let lastResultForSnapshot = null;
+let analysisBusy = false;
+
+const els = {};
+
+function $(id){ return document.getElementById(id); }
+
+/* ============== 起動 ============== */
+window.addEventListener("load", () => {
+  els.threshSlider = $("threshSlider");
+  els.ratioSlider = $("ratioSlider");
+  els.maxRSlider = $("maxRSlider");
+  els.threshVal = $("threshVal");
+  els.ratioVal = $("ratioVal");
+  els.maxRVal = $("maxRVal");
+  els.statusCard = $("statusCard");
+  els.detail = $("detail");
+  els.snapBtn = $("snapBtn");
+  els.pauseBtn = $("pauseBtn");
+  els.camSelect = $("camSelect");
+  els.switchBtn = $("switchBtn");
+  els.toast = $("snap-toast");
+
+  els.threshSlider.addEventListener("input", () => {
+    els.threshVal.textContent = els.threshSlider.value;
+  });
+  els.ratioSlider.addEventListener("input", () => {
+    els.ratioVal.textContent = parseFloat(els.ratioSlider.value).toFixed(1) + " %";
+  });
+  els.maxRSlider.addEventListener("input", () => {
+    MAX_INNER_RADIUS = parseInt(els.maxRSlider.value, 10);
+    els.maxRVal.textContent = MAX_INNER_RADIUS;
+  });
+
+  els.snapBtn.addEventListener("click", saveSnapshot);
+  els.pauseBtn.addEventListener("click", togglePause);
+  els.switchBtn.addEventListener("click", switchCamera);
+
+  video = document.createElement("video");
+  video.setAttribute("playsinline", "");
+  video.muted = true;
+
+  outCanvas = $("output");
+  outCtx = outCanvas.getContext("2d", { willReadFrequently: false });
+
+  workCanvas = document.createElement("canvas");
+  workCtx = workCanvas.getContext("2d", { willReadFrequently: true });
+
+  waitForOpenCv();
+});
+
+function waitForOpenCv() {
+  if (window.cv && window.cv.Mat) {
+    // cv.js は非同期初期化する場合があるため onRuntimeInitialized も見る
+    if (cv.getBuildInformation) {
+      onCvReady();
+    } else {
+      cv["onRuntimeInitialized"] = onCvReady;
+    }
+  } else {
+    setTimeout(waitForOpenCv, 100);
+  }
+}
+
+async function onCvReady() {
+  cvReady = true;
+  $("boot-msg").textContent = "カメラへのアクセスを許可してください…";
+  try {
+    await startCamera();
+    $("boot").classList.add("hidden");
+    running = true;
+    requestAnimationFrame(renderLoop);
+    setInterval(analyzeTick, 120); // 解析は約8fps間隔で十分
+  } catch (err) {
+    $("boot-msg").innerHTML =
+      "カメラを起動できませんでした。<br/>" +
+      "ブラウザのカメラ権限、および HTTPS 接続を確認してください。<br/>" +
+      "<span style='color:#f87171'>" + (err && err.message ? err.message : err) + "</span>";
+  }
+}
+
+/* ============== カメラ ============== */
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter(d => d.kind === "videoinput");
+  els.camSelect.innerHTML = "";
+  cams.forEach((c, i) => {
+    const opt = document.createElement("option");
+    opt.value = c.deviceId;
+    opt.textContent = c.label || `カメラ ${i + 1}`;
+    els.camSelect.appendChild(opt);
+  });
+  return cams;
+}
+
+async function startCamera(deviceId) {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+  }
+  const constraints = {
+    audio: false,
+    video: deviceId
+      ? { deviceId: { exact: deviceId } }
+      : { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } }
+  };
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  video.srcObject = stream;
+  await video.play();
+
+  currentDeviceId = stream.getVideoTracks()[0].getSettings().deviceId || null;
+
+  await new Promise(res => {
+    if (video.readyState >= 2) return res();
+    video.onloadedmetadata = () => res();
+  });
+
+  workCanvas.width = video.videoWidth;
+  workCanvas.height = video.videoHeight;
+
+  try {
+    const cams = await listCameras();
+    if (currentDeviceId) {
+      els.camSelect.value = currentDeviceId;
+    }
+  } catch (e) { /* enumerateDevices may lack labels before first permission; ignore */ }
+}
+
+async function switchCamera() {
+  const selected = els.camSelect.value;
+  if (selected && selected !== currentDeviceId) {
+    await startCamera(selected);
+    return;
+  }
+  // ラベルが無い/選択肢が同じ場合は前面/背面をトグル
+  const track = stream && stream.getVideoTracks()[0];
+  const facing = track && track.getSettings && track.getSettings().facingMode;
+  const wantUser = facing === "environment";
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: wantUser ? "user" : "environment" } }
+    });
+    video.srcObject = stream;
+    await video.play();
+    workCanvas.width = video.videoWidth;
+    workCanvas.height = video.videoHeight;
+  } catch (e) {
+    console.warn("switchCamera failed", e);
+  }
+}
+
+/* ============== 描画ループ（毎フレーム） ============== */
+function renderLoop() {
+  if (!running) return;
+  fitOutputCanvas();
+
+  if (video.readyState >= 2) {
+    outCtx.drawImage(video, 0, 0, outCanvas.width, outCanvas.height);
+    if (lastResultForSnapshot && lastResultForSnapshot.overlay) {
+      outCtx.drawImage(lastResultForSnapshot.overlay, 0, 0, outCanvas.width, outCanvas.height);
+    }
+  }
+  requestAnimationFrame(renderLoop);
+}
+
+function fitOutputCanvas() {
+  const stage = $("stage");
+  const w = stage.clientWidth, h = stage.clientHeight;
+  if (outCanvas.width !== w || outCanvas.height !== h) {
+    outCanvas.width = w;
+    outCanvas.height = h;
+  }
+}
+
+/* ============== 解析ループ（間引き実行） ============== */
+function analyzeTick() {
+  if (paused || !cvReady || analysisBusy) return;
+  if (video.readyState < 2 || video.videoWidth === 0) return;
+  analysisBusy = true;
+  try {
+    workCtx.drawImage(video, 0, 0, workCanvas.width, workCanvas.height);
+    const darkThresh = parseInt(els.threshSlider.value, 10);
+    const okRatio = parseFloat(els.ratioSlider.value);
+    const result = analyzeFrame(workCanvas, darkThresh);
+    lastResultForSnapshot = buildOverlay(result, workCanvas.width, workCanvas.height);
+    updateStatus(result, okRatio);
+  } catch (e) {
+    console.error(e);
+  } finally {
+    analysisBusy = false;
+  }
+}
+
+/* ============== 画像解析（Python版のロジック移植） ============== */
+function analyzeFrame(canvas, darkThresh) {
+  const src = cv.imread(canvas);
+  const gray = new cv.Mat();
+  const blurred = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  cv.GaussianBlur(gray, blurred, new cv.Size(9, 9), 0, 0, cv.BORDER_DEFAULT);
+
+  const result = { found_inner: false, found_outer: false };
+
+  const inner = findInnerCircle(blurred, darkThresh);
+  if (!inner) {
+    src.delete(); gray.delete(); blurred.delete();
+    return result;
+  }
+  result.found_inner = true;
+  result.cx_in = inner.cx; result.cy_in = inner.cy; result.r_in = inner.r;
+
+  const outer = findOuterCircle(blurred, inner.cx, inner.cy, inner.r);
+  src.delete(); gray.delete(); blurred.delete();
+
+  if (!outer) return result;
+
+  result.found_outer = true;
+  result.cx_out = outer.cx; result.cy_out = outer.cy; result.r_out = outer.r;
+  result.n_pts = outer.n;
+
+  const offset = Math.hypot(inner.cx - outer.cx, inner.cy - outer.cy);
+  const ratio = outer.r > 0 ? (offset / outer.r) * 100 : 999;
+  result.offset_px = offset;
+  result.ratio_percent = ratio;
+  return result;
+}
+
+function findInnerCircle(grayBlur, darkThresh) {
+  const mask = new cv.Mat();
+  cv.threshold(grayBlur, mask, darkThresh, 255, cv.THRESH_BINARY_INV);
+  const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+  cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
+  cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, kernel);
+
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  let best = null, bestScore = -1;
+  for (let i = 0; i < contours.size(); i++) {
+    const c = contours.get(i);
+    const area = cv.contourArea(c);
+    if (area < 200) { c.delete(); continue; }
+    const peri = cv.arcLength(c, true);
+    if (peri === 0) { c.delete(); continue; }
+    const circularity = (4 * Math.PI * area) / (peri * peri);
+
+    const circleObj = cv.minEnclosingCircle(c);
+    const r = circleObj.radius;
+    if (r < MIN_INNER_RADIUS || r > MAX_INNER_RADIUS) { c.delete(); continue; }
+
+    const score = circularity * Math.sqrt(area);
+    if (circularity > 0.6 && score > bestScore) {
+      const M = cv.moments(c);
+      let cx, cy;
+      if (M.m00 === 0) { cx = circleObj.center.x; cy = circleObj.center.y; }
+      else { cx = M.m10 / M.m00; cy = M.m01 / M.m00; }
+      bestScore = score;
+      best = { cx, cy, r };
+    }
+    c.delete();
+  }
+
+  mask.delete(); kernel.delete(); contours.delete(); hierarchy.delete();
+  return best;
+}
+
+function findOuterCircle(grayBlur, cxIn, cyIn, rIn) {
+  const H = grayBlur.rows, W = grayBlur.cols;
+  const data = grayBlur.data; // Uint8Array, 1ch
+
+  const rStart = Math.max(rIn * 1.1, 5.0);
+  const rEnd = Math.min(Math.max(rIn * 8.0, 50.0), Math.min(H, W) * 0.6);
+  if (rEnd <= rStart) return null;
+
+  const pts = [];
+  for (let angDeg = 0; angDeg < 360; angDeg += 2) {
+    const ang = (angDeg * Math.PI) / 180;
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+
+    const xs = [], ys = [], vals = [];
+    for (let r = rStart; r < rEnd; r += 1.0) {
+      const x = cxIn + r * dx;
+      const y = cyIn + r * dy;
+      if (x < 0 || x >= W || y < 0 || y >= H) continue;
+      const xi = x | 0, yi = y | 0;
+      xs.push(xi); ys.push(yi);
+      vals.push(data[yi * W + xi]);
+    }
+    if (vals.length < 10) continue;
+
+    let peakIdx = 0, peakVal = -1;
+    for (let i = 0; i < vals.length; i++) {
+      if (vals[i] > peakVal) { peakVal = vals[i]; peakIdx = i; }
+    }
+    if (peakVal < BRIGHT_PEAK_MIN) continue;
+    if (peakIdx >= vals.length - 3) continue;
+
+    // np.gradient相当（中心差分、端は片側差分）
+    const grad = new Array(vals.length);
+    for (let i = 0; i < vals.length; i++) {
+      if (i === 0) grad[i] = vals[1] - vals[0];
+      else if (i === vals.length - 1) grad[i] = vals[i] - vals[i - 1];
+      else grad[i] = (vals[i + 1] - vals[i - 1]) / 2;
+    }
+    let minG = Infinity, minIdx = peakIdx;
+    for (let i = peakIdx; i < grad.length; i++) {
+      if (grad[i] < minG) { minG = grad[i]; minIdx = i; }
+    }
+    pts.push([xs[minIdx], ys[minIdx]]);
+  }
+
+  if (pts.length < 20) return null;
+
+  let fit = fitCircleLeastSquares(pts);
+  const dists = pts.map(p => Math.hypot(p[0] - fit.cx, p[1] - fit.cy));
+  const sorted = [...dists].sort((a, b) => a - b);
+  const med = sorted[Math.floor(sorted.length / 2)];
+  if (med <= 0) return null;
+
+  const kept = pts.filter((p, i) => Math.abs(dists[i] - med) < 0.15 * med);
+  if (kept.length < 15) {
+    return { cx: fit.cx, cy: fit.cy, r: fit.r, n: pts.length };
+  }
+  const fit2 = fitCircleLeastSquares(kept);
+  return { cx: fit2.cx, cy: fit2.cy, r: fit2.r, n: kept.length };
+}
+
+function fitCircleLeastSquares(pts) {
+  // Kasa法: [2x,2y,1]・[cx,cy,c]^T = x^2+y^2 を最小二乗で解く
+  let M00 = 0, M01 = 0, M02 = 0, M11 = 0, M12 = 0, M22 = 0;
+  let v0 = 0, v1 = 0, v2 = 0;
+  for (const [x, y] of pts) {
+    const b = x * x + y * y;
+    M00 += 4 * x * x;
+    M01 += 4 * x * y;
+    M02 += 2 * x;
+    M11 += 4 * y * y;
+    M12 += 2 * y;
+    M22 += 1;
+    v0 += 2 * x * b;
+    v1 += 2 * y * b;
+    v2 += b;
+  }
+  const sol = solve3x3(
+    [M00, M01, M02],
+    [M01, M11, M12],
+    [M02, M12, M22],
+    [v0, v1, v2]
+  );
+  const [cx, cy, c] = sol;
+  const r = Math.sqrt(Math.max(c + cx * cx + cy * cy, 0));
+  return { cx, cy, r };
+}
+
+function solve3x3(r0, r1, r2, b) {
+  // クラメルの公式
+  const det = (m) =>
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) -
+    m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+    m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+
+  const A = [r0, r1, r2];
+  const D = det(A);
+  if (Math.abs(D) < 1e-9) return [0, 0, 0];
+
+  const replace = (col) => {
+    const M = [r0.slice(), r1.slice(), r2.slice()];
+    M[0][col] = b[0]; M[1][col] = b[1]; M[2][col] = b[2];
+    return det(M);
+  };
+  return [replace(0) / D, replace(1) / D, replace(2) / D];
+}
+
+/* ============== オーバーレイ描画 ============== */
+function buildOverlay(result, w, h) {
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d");
+
+  if (result.found_inner) {
+    ctx.strokeStyle = "#ff3b3b"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(result.cx_in, result.cy_in, result.r_in, 0, Math.PI * 2);
+    ctx.stroke();
+    drawMarker(ctx, result.cx_in, result.cy_in, "#ff3b3b");
+  }
+  if (result.found_outer) {
+    ctx.strokeStyle = "#33e07a"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(result.cx_out, result.cy_out, result.r_out, 0, Math.PI * 2);
+    ctx.stroke();
+    drawMarker(ctx, result.cx_out, result.cy_out, "#33e07a");
+
+    ctx.strokeStyle = "#ffe14d"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(result.cx_in, result.cy_in);
+    ctx.lineTo(result.cx_out, result.cy_out);
+    ctx.stroke();
+  }
+  return { overlay: canvas, result };
+}
+
+function drawMarker(ctx, x, y, color) {
+  const s = 10;
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x - s, y); ctx.lineTo(x + s, y);
+  ctx.moveTo(x, y - s); ctx.lineTo(x, y + s);
+  ctx.stroke();
+}
+
+/* ============== ステータス表示 ============== */
+function updateStatus(result, okRatio) {
+  const card = els.statusCard, detail = els.detail;
+
+  if (!result.found_inner) {
+    setCard("内側の黒円が未検出", "#5a4a00", "#ffcc66");
+    detail.innerHTML = grid([["しきい値を調整してください", ""]]);
+    return;
+  }
+  if (!result.found_outer) {
+    setCard("外側の白円が未検出", "#5a4a00", "#ffcc66");
+    detail.innerHTML = grid([["距離・明るさを調整してください", ""]]);
+    return;
+  }
+
+  const ratio = result.ratio_percent, offset = result.offset_px;
+  if (ratio <= okRatio) {
+    setCard(`OK  同心度良好 (${ratio.toFixed(1)}%)`, "#0d3d1a", "#4ade80");
+  } else {
+    setCard(`NG  偏心あり (${ratio.toFixed(1)}%)`, "#4a0d0d", "#f87171");
+  }
+
+  detail.innerHTML = grid([
+    ["ズレ量", offset.toFixed(1) + " px"],
+    ["使用エッジ点数", String(result.n_pts)],
+    ["内径半径", result.r_in.toFixed(0) + " px"],
+    ["外径半径", result.r_out.toFixed(0) + " px"],
+  ]);
+}
+
+function grid(rows) {
+  return rows.map(([k, v]) =>
+    `<span class="k">${k}</span><span class="v">${v}</span>`
+  ).join("");
+}
+
+function setCard(text, bg, fg) {
+  els.statusCard.textContent = text;
+  els.statusCard.style.background = bg;
+  els.statusCard.style.color = fg;
+}
+
+/* ============== ボタン操作 ============== */
+function togglePause() {
+  paused = !paused;
+  els.pauseBtn.textContent = paused ? "▶ 再開" : "⏸ 一時停止";
+}
+
+function saveSnapshot() {
+  const link = document.createElement("a");
+  link.download = `snapshot_${Date.now()}.png`;
+  link.href = outCanvas.toDataURL("image/png");
+  link.click();
+  els.toast.classList.add("show");
+  setTimeout(() => els.toast.classList.remove("show"), 1200);
+}
+</script>
+</body>
+</html>
