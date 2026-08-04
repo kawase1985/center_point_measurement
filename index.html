@@ -74,21 +74,32 @@
     font-size:20px;
     font-weight:800;
     color:var(--sub);
+    min-height:1.4em;
+    display:flex;
+    align-items:center;
+    justify-content:center;
     transition:background .15s, color .15s;
   }
   .detail{
     margin-top:8px;
     font-size:12.5px;
     color:var(--sub);
-    line-height:1.7;
     display:grid;
     grid-template-columns:1fr 1fr;
-    gap:2px 12px;
+    grid-auto-rows:1.9em;
+    align-items:center;
+    gap:0 12px;
     padding:0 4px;
-    min-height:3.4em;
   }
   .detail span.k{ color:#6b7280; }
   .detail span.v{ color:var(--text); font-variant-numeric:tabular-nums; }
+  .detail-note{
+    min-height:1.6em;
+    padding:0 4px;
+    font-size:12px;
+    color:var(--warn-fg);
+    line-height:1.6;
+  }
 
   .controls{
     padding:6px 16px 18px;
@@ -184,6 +195,7 @@
   <div class="status-wrap">
     <div class="status-card" id="statusCard">カメラ起動中…</div>
     <div class="detail" id="detail"></div>
+    <div class="detail-note" id="detailNote">&nbsp;</div>
   </div>
 
   <div class="controls">
@@ -217,7 +229,6 @@
 
 <div id="snap-toast">✅ 保存しました</div>
 
-<script src="https://docs.opencv.org/4.9.0/opencv.js" async></script>
 <script>
 "use strict";
 
@@ -252,6 +263,7 @@ window.addEventListener("load", () => {
   els.maxRVal = $("maxRVal");
   els.statusCard = $("statusCard");
   els.detail = $("detail");
+  els.detailNote = $("detailNote");
   els.snapBtn = $("snapBtn");
   els.pauseBtn = $("pauseBtn");
   els.camSelect = $("camSelect");
@@ -283,19 +295,80 @@ window.addEventListener("load", () => {
   workCanvas = document.createElement("canvas");
   workCtx = workCanvas.getContext("2d", { willReadFrequently: true });
 
-  waitForOpenCv();
+  loadOpenCv();
 });
 
-function waitForOpenCv() {
-  if (window.cv && window.cv.Mat) {
-    // cv.js は非同期初期化する場合があるため onRuntimeInitialized も見る
-    if (cv.getBuildInformation) {
-      onCvReady();
+/* ============== OpenCV.js 読み込み（フォールバック＋タイムアウト付き） ============== */
+const CV_SOURCES = [
+  "https://docs.opencv.org/4.x/opencv.js",
+  "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.3/dist/opencv.js"
+];
+const CV_LOAD_TIMEOUT_MS = 20000;
+let cvLoadAttempt = 0;
+
+function loadOpenCv() {
+  if (cvLoadAttempt >= CV_SOURCES.length) {
+    showCvLoadError();
+    return;
+  }
+  const url = CV_SOURCES[cvLoadAttempt];
+  cvLoadAttempt++;
+  $("boot-msg").innerHTML = `OpenCV.js を読み込み中です…<br/>初回は数秒〜数十秒かかることがあります。<br/><span style="opacity:.6;font-size:11px;">(${cvLoadAttempt}/${CV_SOURCES.length})</span>`;
+
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    console.warn("OpenCV.js load timed out from", url);
+    loadOpenCv(); // 次のソースを試す（無ければエラー表示）
+  }, CV_LOAD_TIMEOUT_MS);
+
+  const script = document.createElement("script");
+  script.src = url;
+  script.async = true;
+  script.onerror = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    console.warn("OpenCV.js failed to load from", url);
+    loadOpenCv();
+  };
+  document.head.appendChild(script);
+
+  waitForOpenCv(() => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    onCvReady();
+  });
+}
+
+function waitForOpenCv(cb) {
+  const check = () => {
+    if (window.cv && window.cv.Mat) {
+      if (cv.getBuildInformation) {
+        cb();
+      } else {
+        cv["onRuntimeInitialized"] = cb;
+      }
     } else {
-      cv["onRuntimeInitialized"] = onCvReady;
+      setTimeout(check, 150);
     }
-  } else {
-    setTimeout(waitForOpenCv, 100);
+  };
+  check();
+}
+
+function showCvLoadError() {
+  $("boot-msg").innerHTML =
+    "OpenCV.js の読み込みに失敗しました。<br/>" +
+    "通信環境を確認するか、別の回線（Wi-Fi⇔モバイル通信）で試してください。<br/><br/>" +
+    '<button id="retryCvBtn" style="padding:10px 18px;border-radius:10px;border:1px solid #262b33;background:#1c2028;color:#e7e9ec;font-weight:700;">再試行</button>';
+  const btn = document.getElementById("retryCvBtn");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      cvLoadAttempt = 0;
+      loadOpenCv();
+    });
   }
 }
 
@@ -649,17 +722,26 @@ function drawMarker(ctx, x, y, color) {
 }
 
 /* ============== ステータス表示 ============== */
+const EMPTY_DETAIL_ROWS = [
+  ["ズレ量", "-"],
+  ["使用エッジ点数", "-"],
+  ["内径半径", "-"],
+  ["外径半径", "-"],
+];
+
 function updateStatus(result, okRatio) {
-  const card = els.statusCard, detail = els.detail;
+  const detail = els.detail, note = els.detailNote;
 
   if (!result.found_inner) {
     setCard("内側の黒円が未検出", "#5a4a00", "#ffcc66");
-    detail.innerHTML = grid([["しきい値を調整してください", ""]]);
+    detail.innerHTML = grid(EMPTY_DETAIL_ROWS);
+    note.textContent = "しきい値を調整してください";
     return;
   }
   if (!result.found_outer) {
     setCard("外側の白円が未検出", "#5a4a00", "#ffcc66");
-    detail.innerHTML = grid([["距離・明るさを調整してください", ""]]);
+    detail.innerHTML = grid(EMPTY_DETAIL_ROWS);
+    note.textContent = "距離・明るさを調整してください";
     return;
   }
 
@@ -676,6 +758,7 @@ function updateStatus(result, okRatio) {
     ["内径半径", result.r_in.toFixed(0) + " px"],
     ["外径半径", result.r_out.toFixed(0) + " px"],
   ]);
+  note.textContent = "\u00a0"; // 空でも高さを維持
 }
 
 function grid(rows) {
