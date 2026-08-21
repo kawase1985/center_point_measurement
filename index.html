@@ -124,6 +124,21 @@
     box-shadow:0 0 0 1px var(--accent);
   }
 
+  /* 検出モード切替（セグメントボタン） */
+  .seg{ display:flex; gap:8px; margin-top:4px; }
+  .seg-btn{
+    flex:1;
+    -webkit-appearance:none; border:none;
+    padding:10px 8px; border-radius:10px;
+    border:1px solid var(--line);
+    background:var(--panel-2); color:var(--sub);
+    font-size:12.5px; font-weight:700;
+  }
+  .seg-btn.active{ background:var(--accent); color:#04121f; border-color:var(--accent); }
+  .mode-help{
+    font-size:11px; color:var(--sub); margin:8px 4px 0; line-height:1.6;
+  }
+
   .btn-row{ display:flex; gap:10px; }
   button{
     flex:1;
@@ -200,9 +215,19 @@
 
   <div class="controls">
     <div class="control-row">
-      <label>黒円検出しきい値（明るさ）<span class="val" id="threshVal">60</span></label>
-      <input type="range" id="threshSlider" min="10" max="150" value="60" step="1"/>
+      <label>内側円 検出モード</label>
+      <div class="seg" id="modeSeg">
+        <button type="button" class="seg-btn active" data-mode="adaptive">適応（推奨）</button>
+        <button type="button" class="seg-btn" data-mode="fixed">固定（黒い穴用）</button>
+      </div>
+      <p class="mode-help" id="modeHelp"></p>
     </div>
+
+    <div class="control-row">
+      <label id="threshLabel">内側検出しきい値<span class="val" id="threshVal">15</span></label>
+      <input type="range" id="threshSlider" min="1" max="40" value="15" step="1"/>
+    </div>
+
     <div class="control-row">
       <label>OK判定の許容ズレ比率<span class="val" id="ratioVal">5.0 %</span></label>
       <input type="range" id="ratioSlider" min="1" max="30" value="5" step="0.5"/>
@@ -221,8 +246,8 @@
       <button id="switchBtn" style="flex:0 0 auto; padding:12px 16px;">🔄 切替</button>
     </div>
     <p style="font-size:11px;color:var(--sub);line-height:1.6;margin:0;">
-      赤丸＝内側（黒円）／緑丸＝外側（白円）／黄線＝中心のズレ方向<br/>
-      うまく検出できない場合は「黒円検出しきい値」と「内側円の最大半径」を調整してください。
+      赤丸＝内側／緑丸＝外側（白円）／黄線＝中心のズレ方向<br/>
+      うまく検出できない場合は「検出モード」「内側検出しきい値」「内側円の最大半径」を調整してください。
     </p>
   </div>
 </div>
@@ -235,8 +260,17 @@
 /* ============== パラメータ ============== */
 const MIN_INNER_RADIUS = 2;
 const BRIGHT_PEAK_MIN = 180;
+const LS_KEY = "concentricity_checker_settings_v2";
 
 let MAX_INNER_RADIUS = 20; // スライダーで可変
+
+/* 内側円検出モード関連の状態
+   adaptive: 周囲の壁面よりどれだけ暗ければ穴とみなすか（オフセット値）
+             → 穴が黒くなくても、周囲との相対的な暗さの差で検出できる
+   fixed   : 絶対輝度によるしきい値（従来方式・穴が確実に黒い場合向け） */
+let detectMode = "adaptive";
+let adaptiveOffset = 15;
+let fixedThresh = 60;
 
 /* ============== グローバル状態 ============== */
 let cvReady = false;
@@ -249,17 +283,47 @@ let running = false;
 let lastResultForSnapshot = null;
 let analysisBusy = false;
 let frozenFrame = null;
+let claheInstance = null; // cv.CLAHE インスタンス（cv読み込み後に生成）
 
 const els = {};
 
 function $(id){ return document.getElementById(id); }
 
+/* ============== 設定の保存/読み込み（localStorage） ============== */
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (s.detectMode === "adaptive" || s.detectMode === "fixed") detectMode = s.detectMode;
+    if (typeof s.adaptiveOffset === "number") adaptiveOffset = s.adaptiveOffset;
+    if (typeof s.fixedThresh === "number") fixedThresh = s.fixedThresh;
+    if (typeof s.okRatio === "number") els.ratioSlider && (els.ratioSlider.value = s.okRatio);
+    if (typeof s.maxR === "number") MAX_INNER_RADIUS = s.maxR;
+  } catch (e) { /* 無視して既定値を使う */ }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify({
+      detectMode,
+      adaptiveOffset,
+      fixedThresh,
+      okRatio: parseFloat(els.ratioSlider.value),
+      maxR: MAX_INNER_RADIUS,
+    }));
+  } catch (e) { /* ストレージ不可なら無視 */ }
+}
+
 /* ============== 起動 ============== */
 window.addEventListener("load", () => {
   els.threshSlider = $("threshSlider");
+  els.threshLabel = $("threshLabel");
+  els.threshVal = $("threshVal");
+  els.modeHelp = $("modeHelp");
+  els.modeSeg = $("modeSeg");
   els.ratioSlider = $("ratioSlider");
   els.maxRSlider = $("maxRSlider");
-  els.threshVal = $("threshVal");
   els.ratioVal = $("ratioVal");
   els.maxRVal = $("maxRVal");
   els.statusCard = $("statusCard");
@@ -271,20 +335,39 @@ window.addEventListener("load", () => {
   els.switchBtn = $("switchBtn");
   els.toast = $("snap-toast");
 
-  els.threshSlider.addEventListener("input", () => {
-    els.threshVal.textContent = els.threshSlider.value;
+  loadSettings();
+
+  // モード切替ボタン
+  els.modeSeg.querySelectorAll(".seg-btn").forEach(btn => {
+    btn.addEventListener("click", () => setDetectMode(btn.dataset.mode));
   });
+
+  els.threshSlider.addEventListener("input", () => {
+    const v = parseInt(els.threshSlider.value, 10);
+    if (detectMode === "adaptive") adaptiveOffset = v;
+    else fixedThresh = v;
+    els.threshVal.textContent = String(v);
+    saveSettings();
+  });
+
   els.ratioSlider.addEventListener("input", () => {
     els.ratioVal.textContent = parseFloat(els.ratioSlider.value).toFixed(1) + " %";
+    saveSettings();
   });
   els.maxRSlider.addEventListener("input", () => {
     MAX_INNER_RADIUS = parseInt(els.maxRSlider.value, 10);
     els.maxRVal.textContent = MAX_INNER_RADIUS;
+    saveSettings();
   });
 
   els.snapBtn.addEventListener("click", saveSnapshot);
   els.pauseBtn.addEventListener("click", togglePause);
   els.switchBtn.addEventListener("click", switchCamera);
+
+  // 読み込んだ設定をUIへ反映
+  els.maxRSlider.value = MAX_INNER_RADIUS;
+  els.maxRVal.textContent = MAX_INNER_RADIUS;
+  applyDetectModeToUI(detectMode);
 
   video = document.createElement("video");
   video.setAttribute("playsinline", "");
@@ -298,6 +381,35 @@ window.addEventListener("load", () => {
 
   loadOpenCv();
 });
+
+/* ============== 検出モード切替 ============== */
+function setDetectMode(mode) {
+  detectMode = mode;
+  applyDetectModeToUI(mode);
+  saveSettings();
+}
+
+function applyDetectModeToUI(mode) {
+  els.modeSeg.querySelectorAll(".seg-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  });
+
+  if (mode === "adaptive") {
+    els.threshLabel.childNodes[0].textContent = "内側検出しきい値 (周囲との暗さの差)";
+    els.threshSlider.min = "1";
+    els.threshSlider.max = "40";
+    els.threshSlider.value = String(adaptiveOffset);
+    els.threshVal.textContent = String(adaptiveOffset);
+    els.modeHelp.textContent = "穴が黒くなくてもOK。周囲の壁面よりこの値以上暗ければ穴とみなします。";
+  } else {
+    els.threshLabel.childNodes[0].textContent = "内側検出しきい値 (絶対的な明るさ)";
+    els.threshSlider.min = "10";
+    els.threshSlider.max = "150";
+    els.threshSlider.value = String(fixedThresh);
+    els.threshVal.textContent = String(fixedThresh);
+    els.modeHelp.textContent = "穴が確実に黒い場合向け（従来方式）。この値より暗い画素を穴とみなします。";
+  }
+}
 
 /* ============== OpenCV.js 読み込み（フォールバック＋タイムアウト付き） ============== */
 const CV_SOURCES = [
@@ -375,6 +487,14 @@ function showCvLoadError() {
 
 async function onCvReady() {
   cvReady = true;
+  // CLAHE（局所コントラスト強調）インスタンスを用意しておく（毎フレーム生成しない）
+  try {
+    claheInstance = new cv.CLAHE(3.0, new cv.Size(8, 8));
+  } catch (e) {
+    console.warn("CLAHE unavailable, falling back to plain contrast", e);
+    claheInstance = null;
+  }
+
   $("boot-msg").textContent = "カメラへのアクセスを許可してください…";
   try {
     await startCamera();
@@ -495,9 +615,9 @@ function analyzeTick() {
   analysisBusy = true;
   try {
     workCtx.drawImage(video, 0, 0, workCanvas.width, workCanvas.height);
-    const darkThresh = parseInt(els.threshSlider.value, 10);
+    const threshValue = detectMode === "adaptive" ? adaptiveOffset : fixedThresh;
     const okRatio = parseFloat(els.ratioSlider.value);
-    const result = analyzeFrame(workCanvas, darkThresh);
+    const result = analyzeFrame(workCanvas, threshValue, detectMode);
     lastResultForSnapshot = buildOverlay(result, workCanvas.width, workCanvas.height);
     updateStatus(result, okRatio);
   } catch (e) {
@@ -508,7 +628,7 @@ function analyzeTick() {
 }
 
 /* ============== 画像解析（Python版のロジック移植） ============== */
-function analyzeFrame(canvas, darkThresh) {
+function analyzeFrame(canvas, threshValue, mode) {
   const src = cv.imread(canvas);
   const gray = new cv.Mat();
   const blurred = new cv.Mat();
@@ -517,7 +637,7 @@ function analyzeFrame(canvas, darkThresh) {
 
   const result = { found_inner: false, found_outer: false };
 
-  const inner = findInnerCircle(blurred, darkThresh);
+  const inner = findInnerCircle(blurred, threshValue, mode);
   if (!inner) {
     src.delete(); gray.delete(); blurred.delete();
     return result;
@@ -541,9 +661,41 @@ function analyzeFrame(canvas, darkThresh) {
   return result;
 }
 
-function findInnerCircle(grayBlur, darkThresh) {
+/**
+ * 内側の円（穴）を検出する。
+ *
+ * mode="adaptive" (推奨): 絶対的な黒さではなく「周囲の壁面よりどれだけ暗いか」で
+ *   判定する局所適応二値化(cv.adaptiveThreshold)。穴が真っ黒でなくても、
+ *   周囲との相対的なコントラスト差があれば検出できる。
+ *   threshValue は「周囲の局所平均よりこの値以上暗ければ穴とみなす」オフセット。
+ *
+ * mode="fixed" (従来方式): 絶対輝度によるグローバル二値化。穴が確実に黒い場合向け。
+ *   threshValue はそのまま輝度しきい値(0-255)として使う。
+ */
+function findInnerCircle(grayBlur, threshValue, mode) {
+  // 局所コントラストを強調してから二値化する（淡い陰影の穴を拾いやすくする）
+  const enhanced = new cv.Mat();
+  if (claheInstance) {
+    claheInstance.apply(grayBlur, enhanced);
+  } else {
+    grayBlur.copyTo(enhanced);
+  }
+
   const mask = new cv.Mat();
-  cv.threshold(grayBlur, mask, darkThresh, 255, cv.THRESH_BINARY_INV);
+  if (mode === "adaptive") {
+    let blockSize = Math.max(9, MAX_INNER_RADIUS * 4);
+    if (blockSize % 2 === 0) blockSize += 1;
+    const C = Math.max(1, threshValue);
+    cv.adaptiveThreshold(
+      enhanced, mask, 255,
+      cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV,
+      blockSize, C
+    );
+  } else {
+    cv.threshold(enhanced, mask, threshValue, 255, cv.THRESH_BINARY_INV);
+  }
+  enhanced.delete();
+
   const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
   cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
   cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, kernel);
@@ -552,11 +704,14 @@ function findInnerCircle(grayBlur, darkThresh) {
   const hierarchy = new cv.Mat();
   cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
+  // 適応モードはノイズで輪郭がやや歪みやすいため真円度の要求をわずかに緩和
+  const minCircularity = mode === "adaptive" ? 0.5 : 0.6;
+
   let best = null, bestScore = -1;
   for (let i = 0; i < contours.size(); i++) {
     const c = contours.get(i);
     const area = cv.contourArea(c);
-    if (area < 200) { c.delete(); continue; }
+    if (area < 20) { c.delete(); continue; } // 小さい穴・淡い陰影でも拾えるよう下限を緩和
     const peri = cv.arcLength(c, true);
     if (peri === 0) { c.delete(); continue; }
     const circularity = (4 * Math.PI * area) / (peri * peri);
@@ -566,7 +721,7 @@ function findInnerCircle(grayBlur, darkThresh) {
     if (r < MIN_INNER_RADIUS || r > MAX_INNER_RADIUS) { c.delete(); continue; }
 
     const score = circularity * Math.sqrt(area);
-    if (circularity > 0.6 && score > bestScore) {
+    if (circularity > minCircularity && score > bestScore) {
       const M = cv.moments(c);
       let cx, cy;
       if (M.m00 === 0) { cx = circleObj.center.x; cy = circleObj.center.y; }
@@ -738,9 +893,9 @@ function updateStatus(result, okRatio) {
   const detail = els.detail, note = els.detailNote;
 
   if (!result.found_inner) {
-    setCard("内側の黒円が未検出", "#5a4a00", "#ffcc66");
+    setCard("内側の円が未検出", "#5a4a00", "#ffcc66");
     detail.innerHTML = grid(EMPTY_DETAIL_ROWS);
-    note.textContent = "しきい値を調整してください";
+    note.textContent = "検出モードやしきい値を調整してください";
     return;
   }
   if (!result.found_outer) {
