@@ -734,16 +734,20 @@ function detectCircles(canvas, threshValue, mode) {
  *   threshValue はそのまま輝度しきい値(0-255)として使う。
  */
 function findInnerCircle(grayBlur, threshValue, mode) {
-  // 局所コントラストを強調してから二値化する（淡い陰影の穴を拾いやすくする）
-  const enhanced = new cv.Mat();
-  if (claheInstance) {
-    claheInstance.apply(grayBlur, enhanced);
-  } else {
-    grayBlur.copyTo(enhanced);
-  }
-
   const mask = new cv.Mat();
+
   if (mode === "adaptive") {
+    // 局所コントラストを強調してから二値化する（淡い陰影の穴を拾いやすくする）のは
+    // 適応モードのみ。固定モードは「絶対輝度そのもの」で判定する従来方式のため、
+    // CLAHEはかけない（かけると黒い穴のワークで以前と同じthreshValueの意味が
+    // ズレてしまうため、固定モードの挙動を変えないようにしている）。
+    const enhanced = new cv.Mat();
+    if (claheInstance) {
+      claheInstance.apply(grayBlur, enhanced);
+    } else {
+      grayBlur.copyTo(enhanced);
+    }
+
     // メディアンブラーで細かいノイズ（ゴマ塩状の輝度ムラ）を除去し、
     // フレームごとの輪郭の微小なブレ（ジッター）を抑える。
     cv.medianBlur(enhanced, enhanced, 5);
@@ -758,10 +762,11 @@ function findInnerCircle(grayBlur, threshValue, mode) {
       cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV,
       blockSize, C
     );
+    enhanced.delete();
   } else {
-    cv.threshold(enhanced, mask, threshValue, 255, cv.THRESH_BINARY_INV);
+    // 従来方式(v1相当): 前処理を挟まない生のgrayBlurにそのまま閾値をかける。
+    cv.threshold(grayBlur, mask, threshValue, 255, cv.THRESH_BINARY_INV);
   }
-  enhanced.delete();
 
   const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
   cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
@@ -773,12 +778,15 @@ function findInnerCircle(grayBlur, threshValue, mode) {
 
   // 適応モードはノイズで輪郭がやや歪みやすいため真円度の要求をわずかに緩和
   const minCircularity = mode === "adaptive" ? 0.5 : 0.6;
+  // 固定モードはv1と同じ最小面積(200)を維持。適応モードは小さい穴・淡い陰影
+  // でも拾えるよう下限を緩めている(20)。
+  const minArea = mode === "adaptive" ? 20 : 200;
 
   let best = null, bestScore = -1;
   for (let i = 0; i < contours.size(); i++) {
     const c = contours.get(i);
     const area = cv.contourArea(c);
-    if (area < 20) { c.delete(); continue; } // 小さい穴・淡い陰影でも拾えるよう下限を緩和
+    if (area < minArea) { c.delete(); continue; }
     const peri = cv.arcLength(c, true);
     if (peri === 0) { c.delete(); continue; }
     const circularity = (4 * Math.PI * area) / (peri * peri);
