@@ -617,7 +617,16 @@ function analyzeTick() {
     workCtx.drawImage(video, 0, 0, workCanvas.width, workCanvas.height);
     const threshValue = detectMode === "adaptive" ? adaptiveOffset : fixedThresh;
     const okRatio = parseFloat(els.ratioSlider.value);
-    const result = analyzeFrame(workCanvas, threshValue, detectMode);
+
+    const raw = detectCircles(workCanvas, threshValue, detectMode);
+    const result = smoothResult(raw);
+
+    if (result.found_outer) {
+      const offset = Math.hypot(result.cx_in - result.cx_out, result.cy_in - result.cy_out);
+      result.offset_px = offset;
+      result.ratio_percent = result.r_out > 0 ? (offset / result.r_out) * 100 : 999;
+    }
+
     lastResultForSnapshot = buildOverlay(result, workCanvas.width, workCanvas.height);
     updateStatus(result, okRatio);
   } catch (e) {
@@ -627,8 +636,65 @@ function analyzeTick() {
   }
 }
 
-/* ============== 画像解析（Python版のロジック移植） ============== */
-function analyzeFrame(canvas, threshValue, mode) {
+/* ============== 検出結果の時間方向平滑化（EMA） ==============
+   適応モードはノイズに敏感でフレームごとに円の位置が微妙にブレやすいため、
+   生の検出結果をそのまま表示せず、指数移動平均でなめらかに追従させる。
+   数フレーム検出を見失っても（missGrace以内なら）直前の平滑値を保持する。 */
+let smoothState = null;
+const SMOOTH_ALPHA = 0.3;
+const SMOOTH_MISS_GRACE = 5;
+
+function smoothResult(raw) {
+  let s = smoothState;
+
+  if (raw.found_inner) {
+    if (!s) {
+      s = { cx_in: raw.cx_in, cy_in: raw.cy_in, r_in: raw.r_in,
+            innerMiss: 0, outer: null, outerMiss: 0, n_pts: 0 };
+    } else {
+      s.cx_in += SMOOTH_ALPHA * (raw.cx_in - s.cx_in);
+      s.cy_in += SMOOTH_ALPHA * (raw.cy_in - s.cy_in);
+      s.r_in += SMOOTH_ALPHA * (raw.r_in - s.r_in);
+      s.innerMiss = 0;
+    }
+  } else if (s) {
+    s.innerMiss++;
+    if (s.innerMiss > SMOOTH_MISS_GRACE) s = null;
+  }
+
+  smoothState = s;
+  if (!s) return { found_inner: false, found_outer: false };
+
+  const out = { found_inner: true, cx_in: s.cx_in, cy_in: s.cy_in, r_in: s.r_in };
+
+  if (raw.found_outer) {
+    if (!s.outer) {
+      s.outer = { cx_out: raw.cx_out, cy_out: raw.cy_out, r_out: raw.r_out };
+    } else {
+      s.outer.cx_out += SMOOTH_ALPHA * (raw.cx_out - s.outer.cx_out);
+      s.outer.cy_out += SMOOTH_ALPHA * (raw.cy_out - s.outer.cy_out);
+      s.outer.r_out += SMOOTH_ALPHA * (raw.r_out - s.outer.r_out);
+    }
+    s.n_pts = raw.n_pts;
+    s.outerMiss = 0;
+  } else {
+    s.outerMiss++;
+    if (s.outerMiss > SMOOTH_MISS_GRACE) s.outer = null;
+  }
+
+  if (s.outer) {
+    out.found_outer = true;
+    out.cx_out = s.outer.cx_out; out.cy_out = s.outer.cy_out; out.r_out = s.outer.r_out;
+    out.n_pts = s.n_pts;
+  } else {
+    out.found_outer = false;
+  }
+
+  return out;
+}
+
+/* ============== 画像解析（検出のみ・描画は行わない） ============== */
+function detectCircles(canvas, threshValue, mode) {
   const src = cv.imread(canvas);
   const gray = new cv.Mat();
   const blurred = new cv.Mat();
@@ -653,11 +719,6 @@ function analyzeFrame(canvas, threshValue, mode) {
   result.found_outer = true;
   result.cx_out = outer.cx; result.cy_out = outer.cy; result.r_out = outer.r;
   result.n_pts = outer.n;
-
-  const offset = Math.hypot(inner.cx - outer.cx, inner.cy - outer.cy);
-  const ratio = outer.r > 0 ? (offset / outer.r) * 100 : 999;
-  result.offset_px = offset;
-  result.ratio_percent = ratio;
   return result;
 }
 
@@ -683,7 +744,13 @@ function findInnerCircle(grayBlur, threshValue, mode) {
 
   const mask = new cv.Mat();
   if (mode === "adaptive") {
-    let blockSize = Math.max(9, MAX_INNER_RADIUS * 4);
+    // メディアンブラーで細かいノイズ（ゴマ塩状の輝度ムラ）を除去し、
+    // フレームごとの輪郭の微小なブレ（ジッター）を抑える。
+    cv.medianBlur(enhanced, enhanced, 5);
+
+    // block_size は想定される穴の直径より充分大きくする。大きめにするほど
+    // 局所ノイズに強くなり検出が安定する。
+    let blockSize = Math.max(15, MAX_INNER_RADIUS * 6);
     if (blockSize % 2 === 0) blockSize += 1;
     const C = Math.max(1, threshValue);
     cv.adaptiveThreshold(
